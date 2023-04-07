@@ -5,10 +5,10 @@ using KernelDensity
 using LinearAlgebra
 using Mimi
 using NetCDF
-using RobustAdaptiveMetropolisSampler
 using MCMCDiagnostics
 using Random
 using StatsBase
+using Turing
 
 #-------------------------------------------------------------------------------
 # This function carries out a Markov chain Monte Carlo calibration of BRICK.

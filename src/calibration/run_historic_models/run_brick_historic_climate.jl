@@ -13,7 +13,7 @@ function construct_run_brick(calibration_start_year::Int, calibration_end_year::
 
     # Load an instance of DOECLIM+BRICK model.
     # WARNING: for general use, use `m = get_model!(...[arguments here]...)`  instead
-    m = Mimi.build(get_model(rcp_scenario="RCP85", start_year=calibration_start_year, end_year=calibration_end_year))
+    m = Mimi.build(MimiBRICK.get_model(rcp_scenario="RCP85", start_year=calibration_start_year, end_year=calibration_end_year))
 
     # Get indices needed to normalize temperature anomalies relative to 1861-1880 mean (DOECLIM+BRICK starts in 1850 by default).
     temperature_norm_indices = findall((in)(1861:1880), 1850:calibration_end_year)
@@ -23,43 +23,37 @@ function construct_run_brick(calibration_start_year::Int, calibration_end_year::
     sealevel_norm_indices_1992_2001 = findall((in)(1992:2001), 1850:calibration_end_year)
 
     # Given user settings, create a function to run BRICK and return model output used for calibration.
-    function run_brick!(
-        param::Array{Float64,1},
-        modeled_glaciers::Vector{Float64},
-        modeled_greenland::Vector{Float64},
-        modeled_antarctic::Vector{Float64},
-        modeled_thermal_expansion::Vector{Float64},
-        modeled_gmsl::Vector{Float64})
+    function run_brick(param)
 
         # Assign names to uncertain model and initial condition parameters for convenience.
         # Note: This assumes "param" is the full vector of uncertain parameters with the same ordering as in "create_log_posterior_brick.jl".
-        thermal_s₀               = param[9]
-        greenland_v₀             = param[10]
-        glaciers_v₀              = param[11]
-        glaciers_s₀              = param[12]
-        antarctic_s₀             = param[13]
-        thermal_α                = param[14]
-        greenland_a              = param[15]
-        greenland_b              = param[16]
-        greenland_α              = param[17]
-        greenland_β              = param[18]
-        glaciers_β₀              = param[19]
-        glaciers_n               = param[20]
-        anto_α                   = param[21]
-        anto_β                   = param[22]
-        antarctic_γ              = param[23]
-        antarctic_α              = param[24]
-        antarctic_μ              = param[25]
-        antarctic_ν              = param[26]
-        antarctic_precip₀        = param[27]
-        antarctic_κ              = param[28]
-        antarctic_flow₀          = param[29]
-        antarctic_runoff_height₀ = param[30]
-        antarctic_c              = param[31]
-        antarctic_bedheight₀     = param[32]
-        antarctic_slope          = param[33]
-        antarctic_λ              = param[34]
-        antarctic_temp_threshold = param[35]
+        thermal_s₀               = param[1]
+        greenland_v₀             = param[2]
+        glaciers_v₀              = param[3]
+        glaciers_s₀              = param[4]
+        antarctic_s₀             = param[5]
+        thermal_α                = param[6]
+        greenland_a              = param[7]
+        greenland_b              = param[8]
+        greenland_α              = param[9]
+        greenland_β              = param[10]
+        glaciers_β₀              = param[11]
+        glaciers_n               = param[12]
+        anto_α                   = param[13]
+        anto_β                   = param[14]
+        antarctic_γ              = param[15]
+        antarctic_α              = param[16]
+        antarctic_μ              = param[17]
+        antarctic_ν              = param[18]
+        antarctic_precip₀        = param[19]
+        antarctic_κ              = param[20]
+        antarctic_flow₀          = param[21]
+        antarctic_runoff_height₀ = param[22]
+        antarctic_c              = param[23]
+        antarctic_bedheight₀     = param[24]
+        antarctic_slope          = param[25]
+        antarctic_λ              = param[26]
+        antarctic_temp_threshold = param[27]
 
         #----------------------------------------------------------
         # Set BRICK to use sampled parameter values.
@@ -110,26 +104,26 @@ function construct_run_brick(calibration_start_year::Int, calibration_end_year::
         #----------------------------------------------------------
 
         # Glaciers and small ice caps (normalized relative to 1961-1990 mean).
-        modeled_glaciers[:] = m[:glaciers_small_icecaps, :gsic_sea_level] .- mean(m[:glaciers_small_icecaps, :gsic_sea_level][sealevel_norm_indices_1961_1990])
+        modeled_glaciers = m[:glaciers_small_icecaps, :gsic_sea_level] .- mean(m[:glaciers_small_icecaps, :gsic_sea_level][sealevel_norm_indices_1961_1990])
 
         # Greenland ice sheet (normalized relative to 1992-2001 ten year period to work with pooled data that includes IMBIE observations).
-        modeled_greenland[:] = m[:greenland_icesheet, :greenland_sea_level] .- mean(m[:greenland_icesheet, :greenland_sea_level][sealevel_norm_indices_1961_1990])
+        modeled_greenland = m[:greenland_icesheet, :greenland_sea_level] .- mean(m[:greenland_icesheet, :greenland_sea_level][sealevel_norm_indices_1961_1990])
 
         # Antarctic ice sheet (normalized relative to 1992-2001 ten year period to work with IMBIE data).
-        modeled_antarctic[:] = m[:antarctic_icesheet, :ais_sea_level] .- mean(m[:antarctic_icesheet, :ais_sea_level][sealevel_norm_indices_1992_2001])
+        modeled_antarctic = m[:antarctic_icesheet, :ais_sea_level] .- mean(m[:antarctic_icesheet, :ais_sea_level][sealevel_norm_indices_1992_2001])
 
         # Sea level contribution from thermal expansion (calibrating to observed trends, so do not need to normalize).
-        modeled_thermal_expansion[:] = m[:thermal_expansion, :te_sea_level]
+        modeled_thermal_expansion = m[:thermal_expansion, :te_sea_level]
 
 		# Global mean sea level rise (normalize realtive to 1961-1990 mean).
-		modeled_gmsl[:] = m[:global_sea_level, :sea_level_rise] .- mean(m[:global_sea_level, :sea_level_rise][sealevel_norm_indices_1961_1990])
+		modeled_gmsl = m[:global_sea_level, :sea_level_rise] .- mean(m[:global_sea_level, :sea_level_rise][sealevel_norm_indices_1961_1990])
 
         # Return results.
-        return
+        return (modeled_glaciers, modeled_greenland, modeled_antarctic, modeled_thermal_expansion, modeled_gmsl)
     end
 
     # Return run model function.
-    return run_brick!
+    return run_brick
 end
 
 ##------------------------------------------------------------------------------

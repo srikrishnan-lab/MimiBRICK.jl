@@ -2,6 +2,11 @@ using Missings
 using DataFrames
 using Distributions
 using NetCDF
+using Turing
+using PDMats
+using Bijectors
+using Random
+using LinearAlgebra
 
 #-------------------------------------------------------------------------------
 # This file contains functions used to calculate the log-posterior for the BRICK model.
@@ -26,7 +31,11 @@ Function Arguments:
       calibration_data_dir    = Data directory for calibration data. Defaults to package calibration data directory, 
                                 changing this is not recommended.
 """
-function construct_brick_log_prior(joint_antarctic_prior::Bool; calibration_data_dir::Union{String, Nothing} = nothing)
+
+# antarctic prior
+struct AntarcticPrior <: ContinuousMultivariateDistribution end
+
+function construct_antarctic_prior(; calibration_data_dir::Union{String, Nothing} = nothing)
 
     # set calibration data directory if one was not provided ie. it is set as nothing
     if isnothing(calibration_data_dir)
@@ -47,325 +56,199 @@ function construct_brick_log_prior(joint_antarctic_prior::Bool; calibration_data
     antarctic_lower_bound = vec(minimum(antarctic_paleo_params, dims=1))
     antarctic_upper_bound = vec(maximum(antarctic_paleo_params, dims=1))
 
-    # Initialize a vector to store sampled Antarctic ice sheet parameters.
-    antarctic_params = zeros(15)
-
-    # Create either the joint normal prior distribution for the Antarctic ice sheet model or the marginal kernel density estimates.
-    if joint_antarctic_prior == true
-
-        # Fit a multivariate normal to the data (do not use variance estimate for paleo data, separately estimate AR(1) parameters for recent observations isntead).
-        antarctic_joint_prior = fit(MvNormal, antarctic_paleo_params')
-
-    else
-        # If not using joint prior, create marginal kernel density estimates for each Antarctic ice sheet model parameter.
-        prior_anto_α         = truncated_kernel(antarctic_paleo_params[:,1],  antarctic_lower_bound[1],  antarctic_upper_bound[1])
-        prior_anto_β         = truncated_kernel(antarctic_paleo_params[:,2],  antarctic_lower_bound[2],  antarctic_upper_bound[2])
-        prior_γ              = truncated_kernel(antarctic_paleo_params[:,3],  antarctic_lower_bound[3],  antarctic_upper_bound[3])
-        prior_α              = truncated_kernel(antarctic_paleo_params[:,4],  antarctic_lower_bound[4],  antarctic_upper_bound[4])
-        prior_μ              = truncated_kernel(antarctic_paleo_params[:,5],  antarctic_lower_bound[5],  antarctic_upper_bound[5])
-        prior_ν              = truncated_kernel(antarctic_paleo_params[:,6],  antarctic_lower_bound[6],  antarctic_upper_bound[6])
-        prior_precip₀        = truncated_kernel(antarctic_paleo_params[:,7],  antarctic_lower_bound[7],  antarctic_upper_bound[7])
-        prior_κ              = truncated_kernel(antarctic_paleo_params[:,8],  antarctic_lower_bound[8],  antarctic_upper_bound[8])
-        prior_flow₀          = truncated_kernel(antarctic_paleo_params[:,9],  antarctic_lower_bound[9],  antarctic_upper_bound[9])
-        prior_runoff_height₀ = truncated_kernel(antarctic_paleo_params[:,10], antarctic_lower_bound[10], antarctic_upper_bound[10])
-        prior_c              = truncated_kernel(antarctic_paleo_params[:,11], antarctic_lower_bound[11], antarctic_upper_bound[11])
-        prior_bedheight₀     = truncated_kernel(antarctic_paleo_params[:,12], antarctic_lower_bound[12], antarctic_upper_bound[12])
-        prior_slope          = truncated_kernel(antarctic_paleo_params[:,13], antarctic_lower_bound[13], antarctic_upper_bound[13])
-        prior_λ              = truncated_kernel(antarctic_paleo_params[:,14], antarctic_lower_bound[14], antarctic_upper_bound[14])
-        prior_temp_threshold = truncated_kernel(antarctic_paleo_params[:,15], antarctic_lower_bound[15], antarctic_upper_bound[15])
+    # Fit a multivariate normal to the data (do not use variance estimate for paleo data, separately estimate AR(1) parameters for recent observations isntead).
+    antarctic_joint_prior = fit(MvNormal, antarctic_paleo_params')
+    
+    function rand_func!(rng::AbstractRNG, d::AntarcticPrior, x::AbstractVector{<:Real})
+        rand!(rng, antarctic_joint_prior, x)
+        while any(x .< antarctic_lower_bound) || any(x .> antarctic_upper_bound)
+            rand!(rng, antarctic_joint_prior, x)
+        end               
+        return x
     end
 
-    # Create a function to calculate the total log-prior for the Antarctic ice sheet, depending on Antarctic prior type specification.
-    antarctic_total_prior =
-
-        # If using the joint normal prior.
-        if joint_antarctic_prior == true
-            function(p::Array{Float64,1})
-                # If sampled parameters are outside paleo range, return -Inf (needed because Distributions.jl package doesn't have truncated multivariate pdfs).
-                if any(p .< antarctic_lower_bound) || any(p .> antarctic_upper_bound)
-                    return -Inf
-                else
-                    return logpdf(antarctic_joint_prior, p)
-                end
-            end
-
-        # Create function using the marginal kernel densities.
+    function log_likelihood_func(d::AntarcticPrior, x::AbstractVector) 
+        if any(x .< antarctic_lower_bound) || any(x .> antarctic_upper_bound)
+            return -Inf
         else
-            function(p::Array{Float64,1})
-                return log(pdf(prior_anto_α, p[1])) + log(pdf(prior_anto_β, p[2])) + log(pdf(prior_γ, p[3])) + log(pdf(prior_α, p[4])) + log(pdf(prior_μ, p[5])) +
-                       log(pdf(prior_ν, p[6])) + log(pdf(prior_precip₀, p[7])) + log(pdf(prior_κ, p[8])) + log(pdf(prior_flow₀, p[9])) +
-                       log(pdf(prior_runoff_height₀, p[10])) + log(pdf(prior_c, p[11])) + log(pdf(prior_bedheight₀, p[12])) + log(pdf(prior_slope, p[13])) +
-                       log(pdf(prior_λ, p[14])) + log(pdf(prior_temp_threshold, p[15]))
-            end
+            return logpdf(antarctic_joint_prior, x)
         end
-
-    # Declare prior distributions for all other uncertain model and statistical process parameters.
-
-    # -----------------------------------------
-    # Statistical Process Priors.
-    # -----------------------------------------
-    prior_σ_glaciers         = Uniform(1e-10, 0.0015) # Based on BRICK code.
-    prior_σ_greenland        = Uniform(1e-10, 0.002) # Based on BRICK code.
-    prior_σ_antarctic        = Uniform(1e-10, 0.063) # Based on BRICK code.
-    prior_σ_gmsl             = Uniform(1e-10, 0.05) # Just setting the same as prior_σ_gmsl_1900 value from old BRICK code.
-
-    prior_ρ_glaciers         = Uniform(-0.99, 0.99)
-    prior_ρ_greenland        = Uniform(-0.99, 0.99)
-    prior_ρ_antarctic        = Uniform(-0.99, 0.99)
-    prior_ρ_gmsl             = truncated(Normal(0.8, .25), -1.0, 1.0)
-
-    # -----------------------------------------
-    # Initial Condition Priors.
-    # -----------------------------------------
-    prior_thermal_s₀         = Uniform(-0.0484, 0.0484) # BRICK defaults. # Initial sea level rise due to thermal expansion designated in 1850 (m SLE).
-    prior_greenland_v₀       = Uniform(7.16, 7.56)
-    prior_glaciers_v₀        = Uniform(0.31, 0.53)
-    prior_glaciers_s₀        = Uniform(-0.0536, 0.0791)
-    prior_antarctic_s₀       = Uniform(-0.04755, 0.05585) # Informed by prior BRICK runs.
-
-    # ---------------------------------------------
-    # Sea Level Rise From Thermal Expansion Priors
-    # ---------------------------------------------
-    prior_thermal_α          = Uniform(0.05, 0.3) # upper/lower bounds from "Impacts of Observational Constraints Related to Sea Level on Estimates of Climate Sensitivity"  # Global ocean-averaged thermal expansion coefficient (kg m⁻³ °C⁻¹).
-
-    #------------------------------------------------
-    # Sea Level Rise from Greenland Ice Sheet Priors
-    #------------------------------------------------
-    prior_greenland_a        = Uniform(-4.0, -0.001)
-    prior_greenland_b        = Uniform(5.888, 8.832)
-    prior_greenland_α        = Uniform(0.0, 0.001)
-    prior_greenland_β        = Uniform(0.0, 0.001)
-
-    #------------------------------------------------------
-    # Sea Level Rise from Glaciers & Small Ice Caps Priors
-    #------------------------------------------------------
-    prior_glaciers_β₀        = Uniform(0.0, 0.041)
-    prior_glaciers_n         = Uniform(0.55, 1.0)
-
-    #------------------------------------------------------------------------------------
-    # Create function that returns the log-prior of all uncertain model parameters.
-    #------------------------------------------------------------------------------------
-
-    function total_log_prior(p::Array{Float64,1})
-
-        # Assign parameter values names for convenience/tractability.
-        σ_glaciers               = p[1]
-        σ_greenland              = p[2]
-        σ_antarctic              = p[3]
-        σ_gmsl                   = p[4]
-        ρ_glaciers               = p[5]
-        ρ_greenland              = p[6]
-        ρ_antarctic              = p[7]
-        ρ_gmsl                   = p[8]
-        thermal_s₀               = p[9]
-        greenland_v₀             = p[10]
-        glaciers_v₀              = p[11]
-        glaciers_s₀              = p[12]
-        antarctic_s₀             = p[13]
-        thermal_α                = p[14]
-        greenland_a              = p[15]
-        greenland_b              = p[16]
-        greenland_α              = p[17]
-        greenland_β              = p[18]
-        glaciers_β₀              = p[19]
-        glaciers_n               = p[20]
-        antarctic_params[:]      = p[21:35]
-
-        log_prior = logpdf(prior_σ_glaciers, σ_glaciers) + logpdf(prior_σ_greenland, σ_greenland) + logpdf(prior_σ_antarctic, σ_antarctic) + logpdf(prior_σ_gmsl, σ_gmsl) +
-                    logpdf(prior_ρ_glaciers, ρ_glaciers) + logpdf(prior_ρ_greenland, ρ_greenland) + logpdf(prior_ρ_antarctic, ρ_antarctic) + logpdf(prior_ρ_gmsl, ρ_gmsl) +
-                    logpdf(prior_thermal_s₀, thermal_s₀) + logpdf(prior_greenland_v₀, greenland_v₀) + logpdf(prior_glaciers_v₀, glaciers_v₀) + logpdf(prior_glaciers_s₀, glaciers_s₀) + logpdf(prior_antarctic_s₀, antarctic_s₀) +
-                    logpdf(prior_thermal_α, thermal_α) +
-                    logpdf(prior_greenland_a, greenland_a) + logpdf(prior_greenland_b, greenland_b) + logpdf(prior_greenland_α, greenland_α) + logpdf(prior_greenland_β, greenland_β) +
-                    logpdf(prior_glaciers_β₀, glaciers_β₀) + logpdf(prior_glaciers_n, glaciers_n) +
-                    antarctic_total_prior(antarctic_params)
-
-        return log_prior
     end
 
-    # Return total log-prior function for standalone BRICK.
-    return total_log_prior
+    bijector_func(d::AntarcticPrior) = Stacked(Bijectors.Logit.(antarctic_lower_bound, antarctic_upper_bound))
+
+    return (rand_func!, log_likelihood_func, bijector_func)        
 end
 
-"""
-    construct_brick_log_posterior(f_run_model!; model_start_year::Int=1850, calibration_end_year::Int=2017, joint_antarctic_prior::Bool=false)
+antarctic_dist_funcs = construct_antarctic_prior()
+Base.length(d::AntarcticPrior) = 15
+Distributions._rand!(rng::AbstractRNG, d::AntarcticPrior, x::AbstractArray{<:Real}) = antarctic_dist_funcs[1](rng, d, x)
+Distributions.logpdf(d::AntarcticPrior, x::AbstractArray{<:Real}) = antarctic_dist_funcs[2](d, x)
+Bijectors.bijector(d::AntarcticPrior) = antarctic_dist_funcs[3]
 
-Calculate log posterior for brick.
+function get_brick_calibration_data(model_start_year::Int=1850, calibration_end_year::Int=2017)
 
-Description: This creates a function that calculates the log-posterior probability of the uncertain model, initial
-             condition, and statistical process parameters.
-
-Function Arguments:
-
-    f_run_model           = A function that runs the specific climate model version and returns the output being calibrated to observations.
-    model_start_year      = First year to run the model (not necessarily first year of the calibration if model initializes earlier).
-    end_year              = The final year to run the model calibration (defaults to 2017).
-    joint_antarctic_prior = TRUE/FALSE check for whether to use a joint normal prior distribution (TRUE = option 1 described
-                            above) or fitted marginal kernel density estimates (FLASE = option 2 described above).
-"""
-function construct_brick_log_posterior(f_run_model!; model_start_year::Int=1850, calibration_end_year::Int=2017, joint_antarctic_prior::Bool=false)
-
-   # Create a vector of calibration years and calculate total number of years to run model.
+# Create a vector of calibration years and calculate total number of years to run model.
     calibration_years = collect(model_start_year:calibration_end_year)
     n = length(calibration_years)
-
-    # Get log-prior function.
-    brick_log_prior = construct_brick_log_prior(joint_antarctic_prior)
 
     # Load calibration data/observations.
     calibration_data, obs_antarctic_trends, obs_thermal_trends = MimiBRICK.load_calibration_data(model_start_year, calibration_end_year, last_sea_level_norm_year=1990)
 
+    return calibration_data, obs_antarctic_trends, obs_thermal_trends
+end
+
+calibration_data, antarctic_trends, thermal_trends = get_brick_calibration_data()
+
+function get_calibration_inputs(calibration_data::DataFrame, thermal_trends::DataFrame)
+    ## get calibration data indices 
     # Calculate indices for each year that has an observation in calibration data sets.
     indices_glaciers_data      = findall(x-> !ismissing(x), calibration_data.glaciers_obs)
+    n_glaciers = length(indices_glaciers_data)
     indices_greenland_data     = findall(x-> !ismissing(x), calibration_data.merged_greenland_obs) # Use merged Greenland data.
+    n_greenland = length(indices_greenland_data)
     indices_antarctic_data     = findall(x-> !ismissing(x), calibration_data.antarctic_imbie_obs)
+    n_antarctic = length(indices_antarctic_data)
     indices_gmsl_data          = findall(x-> !ismissing(x), calibration_data.gmsl_obs)
+    n_gmsl = length(indices_gmsl_data)
+    n_thermal_trend = size(thermal_trends, 1)
+    obs_lengths = disallowmissing([n_glaciers, n_greenland, n_antarctic, n_gmsl, n_thermal_trend])
 
-    # Allocate arrays to store data-model residuals.
-    glaciers_residual    = zeros(length(indices_glaciers_data))
-    greenland_residual   = zeros(length(indices_greenland_data))
-    antarctic_residual   = zeros(length(indices_antarctic_data))
-    gmsl_residual        = zeros(length(indices_gmsl_data))
+    ## get observations
+    obs_antarctica = calibration_data[indices_antarctic_data, :antarctic_imbie_obs]
+    obs_greenland = calibration_data[indices_greenland_data, :merged_greenland_obs]
+    obs_glaciers = calibration_data[indices_glaciers_data, :glaciers_obs]
+    obs_gmsl = calibration_data[indices_gmsl_data, :gmsl_obs]
+    obs_thermal_trend = thermal_trends.Trend
+    obs = disallowmissing([obs_glaciers; obs_greenland; obs_antarctica; obs_gmsl; obs_thermal_trend])
 
-    # Allocate vectors to store model output being calibrated to the observations.
-    modeled_glaciers          = zeros(n)
-    modeled_greenland         = zeros(n)
-    modeled_antarctic         = zeros(n)
-    modeled_thermal_expansion = zeros(n)
-    modeled_thermal_trend     = zeros(size(obs_thermal_trends, 1))
-    modeled_gmsl              = zeros(n)
+    ## get observation errors
+    err_glaciers = calibration_data[indices_glaciers_data, :glaciers_sigma]
+    err_greenland = calibration_data[indices_greenland_data, :merged_greenland_sigma]
+    err_antarctic = calibration_data[indices_antarctic_data, :antarctic_imbie_sigma]
+    err_gmsl = calibration_data[indices_gmsl_data, :gmsl_sigma]
+    # Calculate σ for observed trends based on IPCC 90% trend window values.
+    err_thermal_trend = 0.5 .* (thermal_trends.Upper_90_Percent .- thermal_trends.Lower_90_Percent)
+    err = Diagonal(disallowmissing([err_glaciers; err_greenland; err_antarctic; err_gmsl; err_thermal_trend]))
 
-    # Allocate vectors to store log-likelihoods for individual thermal trends for convenience (assumes iid error structure).
-    individual_llik_thermal_trend = zeros(size(obs_thermal_trends, 1))
-
-    #---------------------------------------------------------------------------------------------------------------------------------------
-    # Create a function to calculate the log-likelihood for the observations, assuming residual independence across calibration data sets.
-    #---------------------------------------------------------------------------------------------------------------------------------------
-
-    function brick_log_likelihood(p::Array{Float64,1})
-
-        # Assign names to uncertain statistical process parameters used in log-likelihood calculations.
-        σ_glaciers         = p[1]
-        σ_greenland        = p[2]
-        σ_antarctic        = p[3]
-        σ_gmsl             = p[4]
-        ρ_glaciers         = p[5]
-        ρ_greenland        = p[6]
-        ρ_antarctic        = p[7]
-        ρ_gmsl             = p[8]
-
-        # Run an instance of BRICK with sampled parameter set and return model output being compared to observations.
-        f_run_model!(p, modeled_glaciers, modeled_greenland, modeled_antarctic, modeled_thermal_expansion, modeled_gmsl)
-
-        #-----------------------------------------------------------------------
-        # Glaciers and Small Ice Caps Log-Likelihood
-        #-----------------------------------------------------------------------
-
-        llik_glaciers = 0.0
-
-        # Calculate glaciers and small ice caps residuals.
-        for (i, index)=enumerate(indices_glaciers_data)
-            glaciers_residual[i] = calibration_data[index, :glaciers_obs] - modeled_glaciers[index]
-        end
-
-        # Calculate sea level contribution from glaciers and small ice caps log-likelihood.
-        llik_glaciers = hetero_logl_ar1(glaciers_residual, σ_glaciers, ρ_glaciers, calibration_data[indices_glaciers_data, :glaciers_sigma])
-
-        #-------------------------------------------------------------------------------
-        # Greenland Ice Sheet Merged Data (normalized to 1992_2001 mean) Log-Likelihood
-        #-------------------------------------------------------------------------------
-
-        llik_greenland = 0.0
-
-        # Calculate greenland ice sheet residuals.
-        for (i, index)=enumerate(indices_greenland_data)
-            greenland_residual[i] = calibration_data[index, :merged_greenland_obs] - modeled_greenland[index]
-        end
-
-        # Calculate sea level contribution from Greenland ice sheet log-likelihood.
-        llik_greenland = hetero_logl_ar1(greenland_residual, σ_greenland, ρ_greenland, calibration_data[indices_greenland_data, :merged_greenland_sigma])
-
-        #------------------------------------------------------------------------------------
-        # AIS (Antarctic Ice Sheet) IMBIE Data (normalized to 1992_2001 mean) Log-Likelihood
-        #------------------------------------------------------------------------------------
-
-        llik_antarctic = 0.0
-
-        # Calculate Antarctic ice sheet residuals.
-        for (i, index)=enumerate(indices_antarctic_data)
-            antarctic_residual[i] = calibration_data[index, :antarctic_imbie_obs] - modeled_antarctic[index]
-        end
-
-        # Calculate sea level contribution from Antarctic ice sheet log-likelihood.
-        llik_antarctic = hetero_logl_ar1(antarctic_residual, σ_antarctic, ρ_antarctic, calibration_data[indices_antarctic_data, :antarctic_imbie_sigma])
-
-        #-----------------------------------------------------------------------
-        # Thermal Expansion Trends for 1971-2009 & 1993-2009
-        #-----------------------------------------------------------------------
-        llik_thermal_trend = 0.0
-
-        # Add a check for whether or not the calibration period covers the thermal trend period (some sensitivity tests will not), otherwise just return 0.0.
-        if calibration_end_year >= 2009
-
-            # Calculate the AIS trends (in milimeters) from the annual modeled output.
-            modeled_thermal_trend[:] = calculate_trends(modeled_thermal_expansion, obs_thermal_trends, model_start_year, calibration_end_year)
-
-            # Calculate thermal expansion trend residuals.
-            for i = 1:length(modeled_thermal_trend)
-                thermal_trend_residual = modeled_thermal_trend[i] - obs_thermal_trends.Trend[i]
-                # Calculate σ for observed trends based on IPCC 90% trend window values.
-                obs_trend_err = 0.5 * (obs_thermal_trends.Upper_90_Percent[i] - obs_thermal_trends.Lower_90_Percent[i])
-                # Calculate sea level contribution from thermal expansion log-likelihood.
-                individual_llik_thermal_trend[i] = logpdf(Normal(0.0, obs_trend_err), thermal_trend_residual)
-            end
-
-            # Calculate total log-likelihood of thermal expansion sea level trend as sum of individual log likelihoods.
-            llik_thermal_trend = sum(individual_llik_thermal_trend)
-        end
-
-        #---------------------------------------------------------------------------
-        # Global Mean Sea Level Rise (normalized to 1961-1990 mean) Log-Likelihood.
-        #---------------------------------------------------------------------------
-
-        llik_gmsl = 0.0
-
-        # Calculate global mean sea level residuals.
-        for (i, index)=enumerate(indices_gmsl_data)
-            gmsl_residual[i] = calibration_data[index, :gmsl_obs] - modeled_gmsl[index]
-        end
-
-        # Calculate global mean sea level log-likelihood.
-        llik_gmsl = hetero_logl_ar1(gmsl_residual, σ_gmsl, ρ_gmsl, calibration_data[indices_gmsl_data,:gmsl_sigma])
-
-        #-----------------------------------------------------------------------
-        # Total Log-Likelihood
-        #-----------------------------------------------------------------------
-
-        # Calculate the total log-likelihood (assuming residual independence across data sets).
-        llik = llik_glaciers + llik_greenland + llik_antarctic + llik_thermal_trend + llik_gmsl
-
-        return llik
-    end
-
-    #---------------------------------------------------------------------------------------------------------------
-    # Create a function to calculate the log-posterior of uncertain parameters 'p' (posterior ∝ likelihood * prior)
-    #---------------------------------------------------------------------------------------------------------------
-
-    function brick_log_posterior(p)
-
-        # Calculate log-prior
-        log_prior = brick_log_prior(p)
-
-        # In case a parameter sample leads to non-physical model outcomes, return -Inf rather than erroring out.
-        try
-            log_post = isfinite(log_prior) ? brick_log_likelihood(p) + log_prior : -Inf
-        catch
-            log_post = - Inf
-        end
-    end
-
-    # Return log posterior function given user specifications.
-    return brick_log_posterior
+    return (obs, err, obs_lengths)
 end
+
+@model function brick_posterior(observations, obs_error, obs_lengths, thermal_trends, f_run_model; model_start_year::Int=1850, calibration_end_year::Int=2017)
+    ## priors
+    σ_glaciers ~ Uniform(1e-10, 0.0015) # Based on BRICK code.
+    σ_greenland ~ Uniform(1e-10, 0.002) # Based on BRICK code.
+    σ_antarctic ~ Uniform(1e-10, 0.063) # Based on BRICK code.
+    σ_gmsl ~ Uniform(1e-10, 0.05) # Just setting the same as prior_σ_gmsl_1900 value from old BRICK code.
+    ρ_glaciers ~ Uniform(-0.99, 0.99)
+    ρ_greenland ~ Uniform(-0.99, 0.99)
+    ρ_antarctic ~ Uniform(-0.99, 0.99)
+    ρ_gmsl ~ truncated(Normal(0.8, .25), -1.0, 1.0)
+
+    thermal_s₀ ~ Uniform(-0.0484, 0.0484) # BRICK defaults. # Initial sea level rise due to thermal expansion designated in 1850 (m SLE).
+    greenland_v₀ ~ Uniform(7.16, 7.56)
+    glaciers_v₀ ~ Uniform(0.31, 0.53)
+    glaciers_s₀ ~ Uniform(-0.0536, 0.0791)
+    antarctic_s₀ ~ Uniform(-0.04755, 0.05585) # Informed by prior BRICK runs.
+
+    thermal_α ~ Uniform(0.05, 0.3) # upper/lower bounds from "Impacts of Observational Constraints Related to Sea Level on Estimates of Climate Sensitivity"  # Global ocean-averaged thermal expansion coefficient (kg m⁻³ °C⁻¹).
+
+    greenland_a ~ Uniform(-4.0, -0.001)
+    greenland_b ~ Uniform(5.888, 8.832)
+    greenland_α ~ Uniform(0.0, 0.001)
+    greenland_β ~ Uniform(0.0, 0.001)
+    glaciers_β₀ ~ Uniform(0.0, 0.041)
+    glaciers_n  ~ Uniform(0.55, 1.0)
+    antarctic_params ~ AntarcticPrior()
+
+    (anto_α,
+    anto_β,
+    antarctic_γ,
+    antarctic_α,
+    antarctic_μ,
+    antarctic_ν,
+    antarctic_precip₀,
+    antarctic_κ,
+    antarctic_flow₀,
+    antarctic_runoff_height₀,
+    antarctic_c,
+    antarctic_bedheight₀,
+    antarctic_slope,
+    antarctic_λ,
+    antarctic_temp_threshold) = antarctic_params
+
+    # run model    
+    (modeled_glaciers, 
+    modeled_greenland, 
+    modeled_antarctic, 
+    modeled_thermal_expansion, 
+    modeled_gmsl) = f_run_model(
+                        (thermal_s₀,
+                        greenland_v₀,
+                        glaciers_v₀,
+                        glaciers_s₀,
+                        antarctic_s₀,
+                        thermal_α,
+                        greenland_a,
+                        greenland_b,
+                        greenland_α,
+                        greenland_β,
+                        glaciers_β₀,
+                        glaciers_n,
+                        anto_α,
+                        anto_β,
+                        antarctic_γ,
+                        antarctic_α,
+                        antarctic_μ,
+                        antarctic_ν,
+                        antarctic_precip₀,
+                        antarctic_κ,
+                        antarctic_flow₀,
+                        antarctic_runoff_height₀,
+                        antarctic_c,
+                        antarctic_bedheight₀,
+                        antarctic_slope,
+                        antarctic_λ,
+                        antarctic_temp_threshold)
+                    )
+
+    break_indices = cumsum(obs_lengths)
+    n_all = sum(obs_lengths)             
+
+    # Calculate the AIS trends (in milimeters) from the annual modeled output.
+    modeled_thermal_trend = calculate_trends(disallowmissing(modeled_thermal_expansion), thermal_trends, model_start_year, calibration_end_year)
+
+    ## construct covariance matrices for each observation series
+    H_glaciers = abs.((1:obs_lengths[1]) .- (1:obs_lengths[1])')
+    Σ_glaciers = ((σ_glaciers / sqrt(1 - ρ_glaciers^2)) .^ H_glaciers)
+    H_greenland = abs.((1:obs_lengths[2]) .- (1:obs_lengths[2])')
+    Σ_greenland = ((σ_greenland / sqrt(1 - ρ_greenland^2)) .^ H_greenland) 
+    H_antarctic = abs.((1:obs_lengths[3]) .- (1:obs_lengths[3])')
+    Σ_antarctic = ((σ_antarctic / sqrt(1 - ρ_antarctic^2)) .^ H_antarctic)
+    H_gmsl = abs.((1:obs_lengths[4]) .- (1:obs_lengths[4])')
+    Σ_gmsl = ((σ_gmsl / sqrt(1 - ρ_gmsl^2)) .^ H_gmsl)
+
+    # combine time series and compute joint likelihood
+    Σ = zeros(n_all, n_all)
+    Σ[1:break_indices[1], 1:break_indices[1]] = Σ_glaciers
+    Σ[break_indices[1]+1:break_indices[2], break_indices[1]+1:break_indices[2]] = Σ_greenland
+    Σ[break_indices[2]+1:break_indices[3], break_indices[2]+1:break_indices[3]] = Σ_antarctic
+    Σ[break_indices[3]+1:break_indices[4], break_indices[3]+1:break_indices[4]] = Σ_gmsl
+    for i = 1:obs_lengths[5]
+        Σ[break_indices[4]+i, break_indices[4]+i] = obs[break_indices[4]+i]
+    end
+    Σ += obs_error
+
+    modeled_all = [modeled_glaciers; modeled_greenland; modeled_antarctic; modeled_gmsl; modeled_thermal_trend]
+    modeled_all ~ MvNormal(observations, PDMats.Symmetric(Σ))
+
+
+end
+
+run_brick = construct_run_brick(1850, 2017)
+(obs, err, obs_length) = get_calibration_inputs(calibration_data, thermal_trends)
+model = brick_posterior(obs, err, obs_length, thermal_trends, run_brick)
+chain = sample(model, NUTS(), 100)
 
 ##------------------------------------------------------------------------------
 ## End
