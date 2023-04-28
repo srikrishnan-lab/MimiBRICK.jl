@@ -42,8 +42,8 @@ function get_model(;rcp_scenario::String="RCP85", start_year::Int=1850, end_year
 
     # Load exogenous time-series for global surface temperature and ocean heat content (output from SNEASY under RCP8.5).
     # NOTE: for now, only `rcp_scenario = "RCP85"` is supported
-    temperature_scenario = DataFrame(load(joinpath(@__DIR__, "..", "data", "model_data", "sneasy_temperature_"*rcp_scenario*"_1850_2300.csv")))
-    oceanheat_scenario   = DataFrame(load(joinpath(@__DIR__, "..", "data", "model_data", "sneasy_oceanheat_"*rcp_scenario*"_1850_2300.csv")))
+    temperature_scenario = DataFrame(load(joinpath(@__DIR__, "data", "model_data", "sneasy_temperature_"*rcp_scenario*"_1850_2300.csv")))
+    oceanheat_scenario   = DataFrame(load(joinpath(@__DIR__, "data", "model_data", "sneasy_oceanheat_"*rcp_scenario*"_1850_2300.csv")))
 
     #-------------------------#
     # ----- Build BRICK ----- #

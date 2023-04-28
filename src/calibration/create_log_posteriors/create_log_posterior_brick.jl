@@ -86,19 +86,19 @@ Distributions._rand!(rng::AbstractRNG, d::AntarcticPrior, x::AbstractArray{<:Rea
 Distributions.logpdf(d::AntarcticPrior, x::AbstractArray{<:Real}) = antarctic_dist_funcs[2](d, x)
 Bijectors.bijector(d::AntarcticPrior) = antarctic_dist_funcs[3]
 
-function get_brick_calibration_data(model_start_year::Int=1850, calibration_end_year::Int=2017)
+function get_brick_calibration_data(;model_start_year::Int=1850, calibration_end_year::Int=2017, calibration_data_dir::Union{Nothing, String} = nothing)
 
 # Create a vector of calibration years and calculate total number of years to run model.
     calibration_years = collect(model_start_year:calibration_end_year)
     n = length(calibration_years)
 
     # Load calibration data/observations.
-    calibration_data, obs_antarctic_trends, obs_thermal_trends = MimiBRICK.load_calibration_data(model_start_year, calibration_end_year, last_sea_level_norm_year=1990)
+    calibration_data, obs_antarctic_trends, obs_thermal_trends = MimiBRICK.load_calibration_data(model_start_year, calibration_end_year, last_sea_level_norm_year=1990, calibration_data_dir = calibration_data_dir)
 
     return calibration_data, obs_antarctic_trends, obs_thermal_trends
 end
 
-calibration_data, antarctic_trends, thermal_trends = get_brick_calibration_data()
+calibration_data, antarctic_trends, thermal_trends = get_brick_calibration_data(calibration_data_dir="data/calibration_data")
 
 function get_calibration_inputs(calibration_data::DataFrame, thermal_trends::DataFrame)
     ## get calibration data indices 
@@ -234,9 +234,6 @@ end
     Σ[break_indices[1]+1:break_indices[2], break_indices[1]+1:break_indices[2]] = Σ_greenland
     Σ[break_indices[2]+1:break_indices[3], break_indices[2]+1:break_indices[3]] = Σ_antarctic
     Σ[break_indices[3]+1:break_indices[4], break_indices[3]+1:break_indices[4]] = Σ_gmsl
-    for i = 1:obs_lengths[5]
-        Σ[break_indices[4]+i, break_indices[4]+i] = obs[break_indices[4]+i]
-    end
     Σ += obs_error
 
     modeled_all = [modeled_glaciers; modeled_greenland; modeled_antarctic; modeled_gmsl; modeled_thermal_trend]
